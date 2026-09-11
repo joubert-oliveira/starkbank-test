@@ -7,13 +7,20 @@ flowchart LR
     subgraph Scheduler
         EB[EventBridge Scheduler<br/>a cada 3h, 8x/24h]
     end
-    EB --> L1[Lambda: invoice-issuer]
-    L1 -->|cria invoices| SB[(Stark Bank API)]
+
+    subgraph VPC["VPC (subnet privada)"]
+        L1[Lambda: invoice-issuer]
+        L2[Lambda: webhook-handler]
+    end
+
+    EB --> L1
+    NAT[NAT Gateway<br/>Elastic IP fixo] --> SB[(Stark Bank API)]
+    L1 -->|cria invoices, via NAT| NAT
 
     SB -->|webhook POST assinado| APIGW[API Gateway HTTP API]
-    APIGW --> L2[Lambda: webhook-handler]
+    APIGW --> L2
     L2 -->|valida assinatura + idempotencia| DDB[(DynamoDB processed-events)]
-    L2 -->|cria transfer| SB
+    L2 -->|cria transfer, via NAT| NAT
 
     SM[Secrets Manager<br/>private key + project id] -.-> L1
     SM -.-> L2
@@ -63,6 +70,16 @@ Arquitetura 100% serverless: escolhida em vez de um container de longa duração
 
 - Uma role por Lambda, cada uma com apenas as permissões que usa: `secretsmanager:GetSecretValue` no secret específico, `dynamodb:GetItem`/`PutItem`/`UpdateItem` na tabela específica (só para `webhook-handler`), e permissões padrão de CloudWatch Logs.
 
+### 2.6 VPC + NAT Gateway (IP fixo)
+
+Não previsto na versão original deste documento — adicionado depois que o deploy real revelou que a Stark Bank **exige pelo menos um IP cadastrado em "IPs permitidos" por Project**, obrigatório na interface do dashboard mesmo sendo tecnicamente opcional no SDK (`Project.allowed_ips=None` por padrão). Como o IP de saída padrão de uma Lambda fora de VPC é dinâmico (alocado de um pool gerenciado pela AWS, muda entre invocações), não dava para cadastrar um IP estável sem essa mudança.
+
+- As duas Lambdas rodam em subnets privadas de uma VPC (`max_azs=1`, 1 subnet pública + 1 privada).
+- Um único **NAT Gateway** com **Elastic IP** fixo concentra todo o tráfego de saída; esse IP é exposto como output do CDK (`NatGatewayIp`) e precisa ser cadastrado manualmente no dashboard da Stark Bank.
+- **DynamoDB Gateway Endpoint** adicionado à VPC para que o `webhook-handler` acesse a tabela sem depender do NAT (tráfego de/para a AWS não precisa sair para a internet, e o endpoint de gateway não tem custo).
+- Secrets Manager continua sendo acessado via NAT (volume de tráfego irrelevante, não justifica um Interface Endpoint adicional só para isso).
+- **Custo**: essa é a única peça da arquitetura que não cabe inteiramente no "Always Free" da AWS — NAT Gateway cobra por hora + dados processados (~$0,045/h). Para o volume e duração desse desafio, o custo total fica na casa de poucos dólares; o NAT Gateway deve ser destruído (`cdk destroy`) assim que os testes terminarem.
+
 ## 3. Fluxo de dados
 
 1. **Emissão**: EventBridge dispara `invoice-issuer` a cada 3h → SDK cria 8-12 invoices → o Sandbox simula o pagamento de parte delas automaticamente.
@@ -79,15 +96,15 @@ Arquitetura 100% serverless: escolhida em vez de um container de longa duração
 ## 5. Estrutura de projeto
 
 ```
-starkbank/
-├── docs/                       # material do desafio
+starkbank-test/
 ├── specs/                      # requirements.md, design.md, tasks.md
 ├── infra/                      # AWS CDK app (Python)
 │   ├── app.py
 │   ├── cdk.json
 │   ├── requirements.txt
 │   └── stark_infra/
-│       └── stark_stack.py
+│       ├── stark_stack.py      # VPC, NAT Gateway, DynamoDB, Lambdas, Schedule, API Gateway
+│       └── bundling.py         # empacotamento das Lambdas sem Docker
 ├── src/
 │   ├── invoice_issuer/
 │   │   └── handler.py
@@ -97,9 +114,14 @@ starkbank/
 │       ├── starkbank_client.py
 │       └── random_person.py
 ├── tests/
-│   ├── test_invoice_issuer.py
+│   ├── conftest.py
+│   ├── test_starkbank_client.py
+│   ├── test_random_person.py
+│   ├── test_invoice_issuer_handler.py
 │   └── test_webhook_handler.py
+├── pytest.ini
 ├── requirements.txt
+├── requirements-dev.txt
 ├── README.md
 └── .gitignore
 ```
@@ -112,3 +134,5 @@ starkbank/
 | Idempotência | DynamoDB (write condicional) | Arquivo/S3 | DynamoDB oferece escrita atômica condicional, evitando corrida entre reentregas concorrentes |
 | Agendamento | EventBridge Scheduler | CloudWatch Events (rules) clássico | Serviço mais recente, com suporte nativo a `startDate`/`endDate` e "flexible time window", menos boilerplate |
 | IaC | AWS CDK (Python) | SAM / Terraform / Console manual | Mesma linguagem da aplicação; infra testável e versionada junto do código |
+| Rede (IP fixo) | VPC + NAT Gateway com Elastic IP | Lambda sem VPC (plano original) | Descartada na prática: a Stark Bank exige IP cadastrado por Project, e o IP de saída de uma Lambda sem VPC é dinâmico. NAT Gateway foi a opção mais simples de implementar com CDK, apesar de ser a única peça paga da arquitetura |
+| Bundling das Lambdas | `pip install` local (sem Docker) | Docker via `aws_lambda_python_alpha` | `starkbank` e suas dependências são 100% Python puro (sem extensões compiladas), então build local funciona igual em qualquer SO e evita depender de Docker Desktop instalado |

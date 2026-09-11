@@ -22,22 +22,22 @@ Cada tarefa referencia o(s) requisito(s) que atende (ver [requirements.md](requi
   - [x] 4.3 Cálculo do valor líquido (amount − fee) e criação da Transfer
   - [x] 4.4 Testes unitários (mock do SDK + moto para DynamoDB, incluindo caso de evento duplicado)
 
-- [ ] 5. Infraestrutura CDK (Python)
-  - [ ] 5.1 Stack: referência ao secret do Secrets Manager (criado/populado manualmente)
-  - [ ] 5.2 Stack: tabela DynamoDB `processed-events` com TTL
-  - [ ] 5.3 Stack: Lambda `invoice-issuer` + EventBridge Scheduler (janela de 24h, a cada 3h)
-  - [ ] 5.4 Stack: Lambda `webhook-handler` + API Gateway HTTP API
-  - [ ] 5.5 IAM roles com least privilege por Lambda
+- [x] 5. Infraestrutura CDK (Python)
+  - [x] 5.1 Stack: referência ao secret do Secrets Manager (criado/populado manualmente)
+  - [x] 5.2 Stack: tabela DynamoDB `processed-events` com TTL
+  - [x] 5.3 Stack: Lambda `invoice-issuer` + EventBridge Scheduler (janela de 24h, a cada 3h)
+  - [x] 5.4 Stack: Lambda `webhook-handler` + API Gateway HTTP API
+  - [x] 5.5 IAM roles com least privilege por Lambda
 
-- [ ] 6. Configuração manual (fora do CDK)
-  - [ ] 6.1 Criar Project no Sandbox da Stark Bank e gerar par de chaves
-  - [ ] 6.2 Popular o secret no Secrets Manager com `private_key` e `project_id`
-  - [ ] 6.3 Deploy (`cdk deploy`) e registrar a URL do API Gateway como Webhook na Stark Bank
+- [x] 6. Configuração manual (fora do CDK)
+  - [x] 6.1 Criar Project no Sandbox da Stark Bank e gerar par de chaves
+  - [x] 6.2 Popular o secret no Secrets Manager com `private_key` e `project_id`
+  - [x] 6.3 Deploy (`cdk deploy`) e registrar a URL do API Gateway como Webhook na Stark Bank
 
-- [ ] 7. Validação end-to-end
-  - [ ] 7.1 Deploy em ambiente AWS real, aguardar ciclo completo de emissão + pagamento simulado do Sandbox
-  - [ ] 7.2 Confirmar a Transfer criada na conta destino
-  - [ ] 7.3 Revisar logs no CloudWatch (emissão, webhook, transfer)
+- [x] 7. Validação end-to-end
+  - [x] 7.1 Deploy em ambiente AWS real, aguardar ciclo completo de emissão + pagamento simulado do Sandbox
+  - [x] 7.2 Confirmar a Transfer criada na conta destino
+  - [x] 7.3 Revisar logs no CloudWatch (emissão, webhook, transfer)
 
 - [ ] 8. Entrega
   - [ ] 8.1 Escrever README com instruções de setup, testes e deploy

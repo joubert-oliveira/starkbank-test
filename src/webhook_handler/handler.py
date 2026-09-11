@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+import time
 
 import boto3
 import starkbank
@@ -13,6 +14,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 TABLE_NAME_ENV_VAR = "PROCESSED_EVENTS_TABLE"
+PROCESSED_EVENT_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days, matches the table's TTL attribute
 DEFAULT_TABLE_NAME = "processed-events"
 
 INVOICE_SUBSCRIPTION = "invoice"
@@ -92,7 +94,11 @@ def _claim_event(event_id: str) -> bool:
     """
     try:
         _table().put_item(
-            Item={"event_id": event_id, "status": STATUS_PROCESSING},
+            Item={
+                "event_id": event_id,
+                "status": STATUS_PROCESSING,
+                "ttl": int(time.time()) + PROCESSED_EVENT_TTL_SECONDS,
+            },
             ConditionExpression="attribute_not_exists(event_id) OR #status <> :completed",
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={":completed": STATUS_COMPLETED},
