@@ -89,6 +89,7 @@ def test_creates_transfer_for_credited_invoice(mock_parse, mock_transfer_create,
 
     transfer_arg = mock_transfer_create.call_args.args[0][0]
     assert transfer_arg.amount == 950  # amount - fee
+    assert transfer_arg.external_id == "evt-1"
     assert transfer_arg.bank_code == "20018183"
     assert transfer_arg.account_number == "6341320293482496"
 

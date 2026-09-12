@@ -36,22 +36,27 @@ Arquitetura 100% serverless: escolhida em vez de um container de longa duração
 ### 2.1 Lambda `invoice-issuer` (atende RF1)
 
 - **Trigger**: EventBridge Scheduler, expressão `rate(3 hours)` dentro de uma schedule group com `startDate`/`endDate` limitando a janela de 24h (garante exatamente 8 execuções sem precisar de lógica extra de contagem).
-- **Responsabilidade**: gerar N (sorteado entre 8 e 12) registros de pessoas fictícias (nome + taxID válido gerado por algoritmo de CPF) com valor aleatório dentro de uma faixa configurável via variável de ambiente, e chamar `starkbank.invoice.create` para cada um.
-- **Resiliência**: cada invoice é criada dentro de seu próprio try/except; falha em uma não aborta o lote (RF1.5).
+- **Design (SRP)**: a lógica é dividida em duas classes de responsabilidade única:
+  - `UniquePersonGenerator`: só gera pessoas fictícias (nome + taxID válido + valor), garantindo taxIDs distintos dentro do lote (RF1.2).
+  - `InvoiceBatchIssuer`: só orquestra a criação do lote — chama `starkbank.invoice.create` por pessoa, isola falhas individuais (RF1.5) e agrega o resultado.
+  - `handler()` fica reduzido a "obter o Project, sortear o tamanho do lote, montar as duas peças acima e delegar" — sem lógica de negócio própria.
+- **Resiliência**: cada invoice é criada dentro de seu próprio try/except (`InvoiceBatchIssuer._issue_one`); falha em uma não aborta o lote.
 - **Config**: timeout 30s, memória 128MB (lote pequeno, sem processamento pesado).
 
 ### 2.2 API Gateway (HTTP API) + Lambda `webhook-handler` (atende RF2, RF3)
 
 - Endpoint público HTTPS único: `POST /webhook`.
+- **Design (SRP + DIP)**: a lógica é dividida em duas classes, e `handler()` só orquestra:
+  - `ProcessedEventRepository`: único ponto de acesso ao DynamoDB, expõe `try_claim`/`mark_completed`/`mark_failed` — ver seção 4 para as garantias ACID por trás desses métodos.
+  - `CreditSettlementService`: única responsável por transformar um `invoice.Log` "credited" numa Transfer (calcula `amount - fee`, chama `starkbank.transfer.create`).
 - Fluxo do handler:
   1. Lê corpo bruto da requisição e o header `Digital-Signature`.
   2. Chama `starkbank.event.parse(content, signature)` — o próprio SDK valida a assinatura contra a chave pública da Stark Bank (com cache interno).
   3. Se a assinatura falhar, o SDK lança exceção → handler responde 400 sem processar.
-  4. Se `event.subscription == "invoice"` e o log for do tipo "credited": calcula `amount - fee` do log.
-  5. Antes de criar a Transfer, grava `event.id` no DynamoDB com **escrita condicional** (`attribute_not_exists(event_id)`). Se a condição falhar, o evento já foi processado (reentrega) → responde 200 e não faz nada mais.
-  6. Cria a Transfer via `starkbank.transfer.create` para a conta destino fixa.
-  7. Atualiza o registro no DynamoDB com o resultado (`transfer_id`, `status`).
-  8. Eventos irrelevantes (subscription/log diferentes) retornam 200 imediatamente, sem gravar no DynamoDB.
+  4. Se `event.subscription == "invoice"` e o log for do tipo "credited" (`_is_credited_invoice`): segue; senão retorna 200 "ignored" imediatamente, sem gravar nada.
+  5. `ProcessedEventRepository.try_claim` grava `event.id` no DynamoDB com **escrita condicional**. Se retornar `False`, o evento já foi processado → responde 200 e não faz nada mais.
+  6. `CreditSettlementService.settle` calcula `amount - fee` e cria a Transfer via `starkbank.transfer.create` para a conta destino fixa.
+  7. `ProcessedEventRepository.mark_completed`/`mark_failed` atualiza o registro no DynamoDB com o resultado.
 
 ### 2.3 DynamoDB `processed-events`
 
@@ -90,8 +95,21 @@ Não previsto na versão original deste documento — adicionado depois que o de
 ## 4. Tratamento de erros e idempotência
 
 - **Reentrega de webhook**: a escrita condicional no DynamoDB antes da Transfer previne duplicidade mesmo sob reentregas concorrentes (a condição é avaliada atomicamente pelo DynamoDB).
-- **Falha ao criar a Transfer** após o evento já estar marcado como processado: o registro fica com `status=failed`; retry fica como melhoria futura (fora do escopo inicial — mencionado como ponto de evolução).
+- **Falha ao criar a Transfer**: o evento fica com `status=failed` no lugar de `completed`, e a condição de `try_claim` (`attribute_not_exists OR status <> completed`) permite que uma reentrega da Stark Bank tente de novo — não fica travado permanentemente.
 - **Falha isolada na emissão de uma invoice**: não aborta o lote (try/except por invoice, ver RF1.5).
+
+### 4.1 Propriedades ACID aplicadas à idempotência
+
+O `ProcessedEventRepository` existe especificamente para dar essas garantias, todas apoiadas em operações de item único do DynamoDB (que são sempre atômicas):
+
+| Propriedade | Onde se aplica |
+|---|---|
+| **Atomicity** | `try_claim` é um único `put_item` condicional: ou grava tudo (event_id + status + ttl) ou não grava nada — nunca fica um registro pela metade. |
+| **Consistency** | A condição `attribute_not_exists(event_id) OR status <> completed` é o invariante do sistema: nenhum evento pode ter duas Transfers associadas. Isso é garantido pelo próprio banco, não só pela lógica da aplicação. |
+| **Isolation** | DynamoDB serializa escritas concorrentes ao mesmo item — duas reentregas do mesmo webhook chegando ao mesmo tempo não conseguem as duas "ganhar" o `try_claim`. |
+| **Durability** | Uma vez confirmado pelo DynamoDB, o registro sobrevive ao fim da execução da Lambda (memória efêmera) e a eventuais crashes. |
+
+**Limite real desse desenho**: a Transfer (Stark Bank) e o registro de idempotência (DynamoDB) são dois sistemas independentes — não existe uma transação distribuída amarrando os dois. Se a Lambda morrer exatamente entre a Transfer ter sido criada com sucesso e o `mark_completed` ser gravado, uma reentrega veria o evento como `processing`/`failed` e tentaria de novo. Para não duplicar o pagamento nesse cenário raro, `CreditSettlementService.settle` passa `external_id=event_id` na Transfer: a Stark Bank rejeita qualquer segunda tentativa com o mesmo `external_id` em vez de mover o dinheiro de novo. A troca é deliberada: preferimos uma falha visível (que exige investigação manual) a uma duplicidade silenciosa de transferência.
 
 ## 5. Estrutura de projeto
 
