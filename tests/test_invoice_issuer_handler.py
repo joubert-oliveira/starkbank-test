@@ -36,7 +36,7 @@ def test_unique_person_generator_retries_on_tax_id_collision():
     generator = invoice_issuer.UniquePersonGenerator(1000, 2000)
     generator._seen_tax_ids.add("11111111111")
 
-    with patch("src.invoice_issuer.handler.generate_person") as mock_generate:
+    with patch("src.invoice_issuer.generator.generate_person") as mock_generate:
         mock_generate.side_effect = [
             {"name": "Foo", "tax_id": "11111111111", "amount": 100},
             {"name": "Bar", "tax_id": "22222222222", "amount": 200},

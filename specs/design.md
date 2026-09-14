@@ -121,13 +121,24 @@ starkbank-test/
 │   ├── cdk.json
 │   ├── requirements.txt
 │   └── stark_infra/
-│       ├── stark_stack.py      # VPC, NAT Gateway, DynamoDB, Lambdas, Schedule, API Gateway
-│       └── bundling.py         # empacotamento das Lambdas sem Docker
+│       ├── stark_stack.py            # orquestra: cria cada Construct e conecta um no outro
+│       ├── bundling.py               # empacotamento das Lambdas sem Docker
+│       ├── network/
+│       │   └── vpc.py                # NetworkConstruct — VPC + NAT Gateway (IP fixo)
+│       ├── database/
+│       │   └── processed_events.py   # ProcessedEventsTable — tabela DynamoDB
+│       └── lambdas/
+│           ├── invoice_issuer.py     # InvoiceIssuerConstruct — Lambda + EventBridge Schedule
+│           └── webhook_handler.py    # WebhookHandlerConstruct — Lambda + API Gateway
 ├── src/
 │   ├── invoice_issuer/
-│   │   └── handler.py
+│   │   ├── handler.py       # orquestra: obtém o Project, monta as peças, delega
+│   │   ├── generator.py     # UniquePersonGenerator
+│   │   └── service.py       # InvoiceBatchIssuer
 │   ├── webhook_handler/
-│   │   └── handler.py
+│   │   ├── handler.py       # orquestra: valida assinatura, filtra, delega
+│   │   ├── repository.py    # ProcessedEventRepository
+│   │   └── service.py       # CreditSettlementService
 │   └── common/
 │       ├── starkbank_client.py
 │       └── random_person.py

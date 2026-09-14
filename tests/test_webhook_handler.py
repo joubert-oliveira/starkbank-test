@@ -21,8 +21,12 @@ def _create_table():
     return dynamodb.Table(TABLE_NAME)
 
 
-def _api_gateway_event(body="raw-content", signature="sig123"):
-    return {"body": body, "headers": {"Digital-Signature": signature}}
+def _api_gateway_event(body="raw-content", signature="sig123", source_ip="35.199.76.124"):
+    return {
+        "body": body,
+        "headers": {"Digital-Signature": signature},
+        "requestContext": {"http": {"sourceIp": source_ip}},
+    }
 
 
 def _fake_credited_event(event_id="evt-1", amount=1000, fee=50):
@@ -33,6 +37,14 @@ def _fake_credited_event(event_id="evt-1", amount=1000, fee=50):
 
 def _fake_transfer(transfer_id="transfer-1"):
     return [SimpleNamespace(id=transfer_id)]
+
+
+def test_rejects_request_from_unexpected_source_ip():
+    event = _api_gateway_event(source_ip="1.2.3.4")
+
+    result = webhook_handler.handler(event, None)
+
+    assert result["statusCode"] == 403
 
 
 @patch("src.webhook_handler.handler.get_project", return_value="fake-project")
