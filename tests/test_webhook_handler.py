@@ -160,6 +160,63 @@ def test_marks_event_failed_when_transfer_creation_raises(mock_parse, mock_trans
     assert item["status"] == "failed"
 
 
+@mock_aws
+@patch("src.webhook_handler.service.time.sleep")
+@patch("src.webhook_handler.handler.get_project", return_value="fake-project")
+@patch("starkbank.transfer.create")
+@patch("starkbank.event.parse")
+def test_retries_transient_error_and_succeeds(mock_parse, mock_transfer_create, mock_get_project, mock_sleep):
+    table = _create_table()
+    mock_parse.return_value = _fake_credited_event(event_id="evt-1", amount=1000, fee=50)
+    mock_transfer_create.side_effect = [
+        starkbank.error.InternalServerError("boom"),
+        _fake_transfer("transfer-1"),
+    ]
+
+    result = webhook_handler.handler(_api_gateway_event(), None)
+
+    assert result["statusCode"] == 200
+    assert mock_transfer_create.call_count == 2
+    item = table.get_item(Key={"event_id": "evt-1"})["Item"]
+    assert item["status"] == "completed"
+    assert item["transfer_id"] == "transfer-1"
+
+
+@mock_aws
+@patch("src.webhook_handler.service.time.sleep")
+@patch("src.webhook_handler.handler.get_project", return_value="fake-project")
+@patch("starkbank.transfer.create")
+@patch("starkbank.event.parse")
+def test_gives_up_after_max_attempts_on_transient_error(mock_parse, mock_transfer_create, mock_get_project, mock_sleep):
+    table = _create_table()
+    mock_parse.return_value = _fake_credited_event(event_id="evt-1")
+    mock_transfer_create.side_effect = starkbank.error.InternalServerError("boom")
+
+    result = webhook_handler.handler(_api_gateway_event(), None)
+
+    assert result["statusCode"] == 500
+    assert mock_transfer_create.call_count == 3
+    item = table.get_item(Key={"event_id": "evt-1"})["Item"]
+    assert item["status"] == "failed"
+
+
+@mock_aws
+@patch("src.webhook_handler.service.time.sleep")
+@patch("src.webhook_handler.handler.get_project", return_value="fake-project")
+@patch("starkbank.transfer.create")
+@patch("starkbank.event.parse")
+def test_does_not_retry_input_errors(mock_parse, mock_transfer_create, mock_get_project, mock_sleep):
+    table = _create_table()
+    mock_parse.return_value = _fake_credited_event(event_id="evt-1")
+    mock_transfer_create.side_effect = starkbank.error.InputErrors([{"code": "invalid", "message": "bad request"}])
+
+    result = webhook_handler.handler(_api_gateway_event(), None)
+
+    assert result["statusCode"] == 500
+    assert mock_transfer_create.call_count == 1
+    mock_sleep.assert_not_called()
+
+
 def test_get_header_is_case_insensitive():
     event = {"headers": {"Digital-Signature": "abc"}}
     assert webhook_handler._get_header(event, "digital-signature") == "abc"
